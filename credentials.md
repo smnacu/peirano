@@ -22,3 +22,13 @@
 
 > [!NOTE]
 > Si la contraseña no funciona, es posible que el hash en la base de datos no sea compatible con su versión de PHP. En ese caso, puede registrar un nuevo usuario desde la página de registro o generar un nuevo hash.
+
+
+notas de la reunion: patente, fecha, chofer datos, peon, nombre apellido num de doc, patente del chasis
+obligatorio, patente y datos personales
+recuerde los datos cargados en la base de datos
+rivadavia o monte de oca 2 calendarios
+restricciones de cada lugar, acoplado, etc.
+si es de 10/15 min se tiene que poder superponer
+codigo del proveedor en lugar de cuit para administradores pero no para los usuarios
+trata para confirmar si es cierto los datos que se cargan

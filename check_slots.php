@@ -12,8 +12,28 @@ if (!isset($_GET['date'])) {
 }
 
 $date = $_GET['date'];
+$branchId = $_GET['branch_id'] ?? null;
+$userDuration = $_SESSION['default_duration'] ?? 60;
+
+// Si el usuario tiene un tiempo asignado menor a 15 minutos,
+// puede reservar en cualquier horario superponiéndose.
+// Por lo tanto, devolvemos todos los slots como disponibles.
+if ($userDuration < 15) {
+    $slots = [];
+    for ($hour = 7; $hour <= 18; $hour++) {
+        $time = sprintf('%02d:00', $hour);
+        $slots[] = [
+            'time' => $time,
+            'available' => true
+        ];
+    }
+    echo json_encode($slots);
+    exit;
+}
+
+// Si no, verificamos disponibilidad normal por sucursal
 $outlook = new OutlookSync();
-$slots = $outlook->getDailyAvailability($date);
+$slots = $outlook->getDailyAvailability($date, $branchId);
 
 echo json_encode($slots);
 ?>

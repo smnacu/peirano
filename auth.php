@@ -2,7 +2,9 @@
 // auth.php
 require_once 'db.php';
 
-session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
 function login($cuit, $password)
 {
@@ -12,9 +14,22 @@ function login($cuit, $password)
     $user = $stmt->fetch();
 
     if ($user && password_verify($password, $user['password_hash'])) {
+        // Check status for providers
+        if ($user['role'] === 'provider' && $user['status'] !== 'approved') {
+            return 'pending_approval';
+        }
+
+        // Check status for others (optional)
+        if ($user['status'] === 'rejected') {
+            return 'rejected';
+        }
+
         $_SESSION['user_id'] = $user['id'];
         $_SESSION['company_name'] = $user['company_name'];
         $_SESSION['cuit'] = $user['cuit'];
+        $_SESSION['role'] = $user['role'];
+        $_SESSION['branch_id'] = $user['branch_id'];
+        $_SESSION['default_duration'] = $user['default_duration'];
         return true;
     }
     return false;
@@ -22,8 +37,13 @@ function login($cuit, $password)
 
 function loginUser($cuit, $password)
 {
-    if (login($cuit, $password)) {
+    $result = login($cuit, $password);
+    if ($result === true) {
         return ['success' => true, 'message' => 'Login exitoso'];
+    } elseif ($result === 'pending_approval') {
+        return ['success' => false, 'message' => 'Su cuenta está pendiente de aprobación por un administrador.'];
+    } elseif ($result === 'rejected') {
+        return ['success' => false, 'message' => 'Su cuenta ha sido rechazada. Contacte a la administración.'];
     }
     return ['success' => false, 'message' => 'CUIT o contraseña incorrectos.'];
 }
@@ -40,12 +60,13 @@ function register($cuit, $password, $company_name, $phone)
     }
 
     $password_hash = password_hash($password, PASSWORD_DEFAULT);
-    $sql = "INSERT INTO users (cuit, password_hash, company_name, phone) VALUES (?, ?, ?, ?)";
+    // Default role: provider, Default status: pending
+    $sql = "INSERT INTO users (cuit, password_hash, company_name, phone, role, status) VALUES (?, ?, ?, ?, 'provider', 'pending')";
     $stmt = $pdo->prepare($sql);
 
     try {
         $stmt->execute([$cuit, $password_hash, $company_name, $phone]);
-        return ['success' => true, 'message' => 'Registro exitoso.'];
+        return ['success' => true, 'message' => 'Registro exitoso. Espere la aprobación del administrador.'];
     } catch (PDOException $e) {
         return ['success' => false, 'message' => 'Error al registrar: ' . $e->getMessage()];
     }

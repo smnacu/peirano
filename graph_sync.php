@@ -21,21 +21,27 @@ class OutlookSync
     }
 
     // Verifica disponibilidad consultando la tabla 'appointments'
-    public function checkAvailability($startTime, $endTime)
+    public function checkAvailability($startTime, $endTime, $branchId = null)
     {
         // Lógica de solapamiento:
-        // Un turno existente se solapa si:
         // (StartExisting < EndNew) AND (EndExisting > StartNew)
+        // Y coincidir en branch_id (si se provee)
 
         $sql = "SELECT COUNT(*) FROM appointments 
                 WHERE start_time < ? AND end_time > ?";
 
+        $params = [$endTime, $startTime];
+
+        if ($branchId) {
+            $sql .= " AND branch_id = ?";
+            $params[] = $branchId;
+        }
+
         $stmt = $this->pdo->prepare($sql);
-        $stmt->execute([$endTime, $startTime]);
+        $stmt->execute($params);
 
         $count = $stmt->fetchColumn();
 
-        // Si count > 0, hay solapamiento, por lo tanto NO está disponible
         if ($count > 0) {
             return false;
         }
@@ -44,13 +50,20 @@ class OutlookSync
     }
 
     // Genera la grilla de disponibilidad diaria basada en la BD local
-    public function getDailyAvailability($date)
+    public function getDailyAvailability($date, $branchId = null)
     {
-        // 1. Obtener todos los turnos de ese día
+        // 1. Obtener todos los turnos de ese día y sucursal
         $sql = "SELECT start_time, end_time FROM appointments 
                 WHERE DATE(start_time) = ?";
+        $params = [$date];
+
+        if ($branchId) {
+            $sql .= " AND branch_id = ?";
+            $params[] = $branchId;
+        }
+
         $stmt = $this->pdo->prepare($sql);
-        $stmt->execute([$date]);
+        $stmt->execute($params);
         $appointments = $stmt->fetchAll();
 
         // 2. Generar slots de 07:00 a 18:00
@@ -62,7 +75,6 @@ class OutlookSync
             $slotStartStr = "$date $time";
             $slotEndStr = date('Y-m-d H:i:s', strtotime($slotStartStr) + 3600);
 
-            // Convertir a timestamp para comparar fácil
             $slotStartTs = strtotime($slotStartStr);
             $slotEndTs = strtotime($slotEndStr);
 
@@ -73,7 +85,6 @@ class OutlookSync
                 $apptStartTs = strtotime($appt['start_time']);
                 $apptEndTs = strtotime($appt['end_time']);
 
-                // Lógica de solapamiento
                 if ($apptStartTs < $slotEndTs && $apptEndTs > $slotStartTs) {
                     $isBusy = true;
                     break;

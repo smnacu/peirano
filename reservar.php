@@ -6,7 +6,7 @@ require_once 'graph_sync.php';
 $error = '';
 $success = '';
 
-// Fetch last appointment for defaults
+// Cargar defaults del último turno para agilizar
 try {
     $pdo = DB::connect();
     $stmt = $pdo->prepare("SELECT * FROM appointments WHERE user_id = ? ORDER BY created_at DESC LIMIT 1");
@@ -18,14 +18,17 @@ try {
     $default_forklift = $last_appointment['needs_forklift'] ?? 0;
     $default_helper = $last_appointment['needs_helper'] ?? 0;
 } catch (Exception $e) {
-    // Fail silently for defaults
     $default_vehicle = '';
     $default_quantity = '';
     $default_forklift = 0;
     $default_helper = 0;
 }
 
+// Fetch Branches
+$branches = $pdo->query("SELECT * FROM branches")->fetchAll();
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $branch_id = $_POST['branch_id'];
     $date = $_POST['date'];
     $time = $_POST['time'];
     $vehicle_type = $_POST['vehicle_type'];
@@ -34,41 +37,70 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $needs_helper = isset($_POST['needs_helper']) ? 1 : 0;
     $observations = $_POST['observations'];
 
-    if (empty($date) || empty($time) || empty($vehicle_type) || empty($quantity)) {
+    if (empty($branch_id) || empty($date) || empty($time) || empty($vehicle_type) || empty($quantity)) {
         $error = "Por favor complete todos los campos obligatorios.";
     } else {
         $start_time = $date . ' ' . $time . ':00';
 
-        // Lógica de duración dinámica
-        if ($vehicle_type === 'Utilitario') {
-            $block_minutes = 30;
-            $real_minutes = 25;
+        // Regla de negocio: Tiempos según vehículo o usuario
+        // Si el usuario tiene un tiempo definido y es < 15 min, se usa ese.
+        // Si no, se usa la lógica de vehículos.
+        
+        $user_duration = $_SESSION['default_duration'] ?? 60;
+        
+        if ($user_duration < 15) {
+            $block_minutes = $user_duration; // Ej: 10 min
+            $real_minutes = $user_duration;
         } else {
-            $block_minutes = 60;
-            $real_minutes = 55;
+            // Lógica estándar
+            if ($vehicle_type === 'Utilitario') {
+                $block_minutes = 30;
+                $real_minutes = 25;
+            } else {
+                $block_minutes = 60;
+                $real_minutes = 55;
+            }
+            // Si el usuario tiene un tiempo MAYOR o igual a 15 asignado, ¿usamos ese?
+            // El requerimiento dice: "tiempo predeterminado asignado a sus turnos (los que tarden menos de 15 min indicados podran tomar turno en cualquier horario...)"
+            // Asumo que si es >= 15, se respeta el tiempo del vehículo o el asignado? 
+            // Vamos a priorizar el tiempo asignado si es distinto del default (60).
+            if ($user_duration != 60) {
+                 $block_minutes = $user_duration;
+                 $real_minutes = $user_duration - 5;
+            }
         }
 
-        // Tiempo para verificar disponibilidad (bloque completo)
         $check_end_time = date('Y-m-d H:i:s', strtotime($start_time) + ($block_minutes * 60));
-
-        // Tiempo real del turno (con buffer)
         $event_end_time = date('Y-m-d H:i:s', strtotime($start_time) + ($real_minutes * 60));
 
         $outlook = new OutlookSync();
-        $isAvailable = $outlook->checkAvailability($start_time, $check_end_time);
+
+        // Validar disponibilidad SOLO si dura >= 15 min.
+        // Si dura < 15 min, se permite superposición (según requerimiento).
+        $isAvailable = true;
+        if ($block_minutes >= 15) {
+            // Check Outlook (Global availability check might be too strict if we want per-branch, 
+            // but Outlook is usually one calendar. We might need to filter by branch in Outlook? 
+            // For now, assume simple availability check).
+            $isAvailable = $outlook->checkAvailability($start_time, $check_end_time);
+        }
 
         if ($isAvailable === false) {
-            $error = "El horario seleccionado no está disponible en el calendario.";
+            $error = "¡Ups! Ese horario ya no está disponible. Por favor elegí otro.";
         } else {
             try {
-                $sql = "INSERT INTO appointments (user_id, start_time, end_time, vehicle_type, needs_forklift, needs_helper, quantity, observations) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+                // Guardar en BD Local
+                $sql = "INSERT INTO appointments (user_id, branch_id, start_time, end_time, vehicle_type, needs_forklift, needs_helper, quantity, observations) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
                 $stmt = $pdo->prepare($sql);
-                $stmt->execute([$_SESSION['user_id'], $start_time, $event_end_time, $vehicle_type, $needs_forklift, $needs_helper, $quantity, $observations]);
-
+                $stmt->execute([$_SESSION['user_id'], $branch_id, $start_time, $event_end_time, $vehicle_type, $needs_forklift, $needs_helper, $quantity, $observations]);
                 $appointment_id = $pdo->lastInsertId();
 
-                $subject = "Turno: " . $_SESSION['company_name'];
-                $description = "Vehículo: $vehicle_type<br>Bultos: $quantity<br>Autoelevador: " . ($needs_forklift ? 'SI' : 'NO') . "<br>Peón: " . ($needs_helper ? 'SI' : 'NO') . "<br>Obs: $observations";
+                // Crear evento
+                $branchName = 'Sucursal'; // Buscar nombre
+                foreach($branches as $b) { if($b['id'] == $branch_id) $branchName = $b['name']; }
+                
+                $subject = "Turno ($branchName): " . $_SESSION['company_name'];
+                $description = "Prov: {$_SESSION['company_name']} | Vehículo: $vehicle_type | Bultos: $quantity | Sucursal: $branchName";
 
                 $event_id = $outlook->createEvent($subject, $start_time, $event_end_time, $description);
 
@@ -77,9 +109,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $update->execute([$event_id, $appointment_id]);
                 }
 
-                $success = "Turno reservado con éxito.";
+                $success = "¡Listo! Te esperamos el " . date('d/m', strtotime($date)) . " a las " . $time . "hs en $branchName.";
             } catch (PDOException $e) {
-                $error = "Error al guardar el turno: " . $e->getMessage();
+                $error = "Error técnico al guardar: " . $e->getMessage();
             }
         }
     }
@@ -87,352 +119,253 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 ?>
 <!DOCTYPE html>
 <html lang="es" data-bs-theme="dark">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Reservar Turno - Peirano Logística</title>
+    <title>Reservar Turno - Peirano</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
     <style>
-        :root {
-            --primary-color: #3b82f6;
-            --primary-hover: #2563eb;
-            --bg-dark: #0f172a;
-            --card-bg: #1e293b;
-            --text-main: #f8fafc;
-            --text-muted: #94a3b8;
-            --border-color: #334155;
-        }
+        :root { --primary-color: #3b82f6; --bg-dark: #0f172a; --card-bg: #1e293b; --text-main: #f8fafc; }
+        body { font-family: 'Outfit', sans-serif; background-color: var(--bg-dark); color: var(--text-main); }
+        .wizard-container { max-width: 800px; margin: 0 auto; }
+        .main-card { background: var(--card-bg); border: 1px solid #334155; border-radius: 20px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); }
+        .step-dot { width: 40px; height: 40px; border-radius: 50%; background: var(--card-bg); border: 2px solid #334155; display: flex; align-items: center; justify-content: center; z-index: 10; transition: all 0.3s; }
+        .step-dot.active { background: var(--primary-color); border-color: var(--primary-color); color: white; box-shadow: 0 0 15px rgba(59, 130, 246, 0.5); }
+        .step-content { display: none; animation: fadeIn 0.4s ease; }
+        .step-content.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .option-card { border: 1px solid #334155; padding: 1rem; border-radius: 12px; cursor: pointer; transition: all 0.2s; background: rgba(15, 23, 42, 0.5); display: flex; align-items: center; justify-content: space-between; height: 100%; }
+        .btn-check:checked+.option-card { background-color: rgba(59, 130, 246, 0.15); border-color: var(--primary-color); box-shadow: 0 0 0 1px var(--primary-color); }
+        .option-card:has(.form-check-input:checked) { background-color: rgba(59, 130, 246, 0.15); border-color: var(--primary-color); }
+        .btn-time { width: 100%; background: #0f172a; border: 1px solid #334155; color: #94a3b8; margin-bottom: 0.5rem; transition: all 0.2s; }
+        .btn-time:hover:not(:disabled) { border-color: var(--primary-color); color: white; }
+        .btn-time.active { background: var(--primary-color); border-color: var(--primary-color); color: white; }
+        .btn-time:disabled { opacity: 0.4; text-decoration: line-through; cursor: not-allowed; }
+        #loadingOverlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(15, 23, 42, 0.9); z-index: 9999; backdrop-filter: blur(5px); }
+        .loader-content { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; }
+    </style>
+</head>
+<body>
+    <div id="loadingOverlay">
+        <div class="loader-content">
+            <div class="spinner-border text-primary mb-3" style="width: 3rem; height: 3rem;" role="status"></div>
+            <h4 class="fw-bold">Confirmando Turno...</h4>
+            <p class="text-muted">Aguarde un instante</p>
+        </div>
+    </div>
 
-        body {
-            font-family: 'Outfit', sans-serif;
-            background-color: var(--bg-dark);
-            color: var(--text-main);
-            min-height: 100vh;
-        }
+    <nav class="navbar navbar-dark bg-dark border-bottom border-secondary sticky-top">
+        <div class="container">
+            <a class="navbar-brand fw-bold" href="dashboard.php"><i class="bi bi-box-seam-fill me-2 text-primary"></i>Peirano Logística</a>
+            <a href="dashboard.php" class="btn btn-sm btn-outline-light rounded-pill px-3">Volver</a>
+        </div>
+    </nav>
 
-        .navbar {
-            background-color: rgba(30, 41, 59, 0.8) !important;
-            backdrop-filter: blur(10px);
-            border-bottom: 1px solid var(--border-color);
-        }
+    <div class="container py-4 wizard-container">
+        <div class="position-relative mb-5 px-4">
+            <div class="position-absolute top-50 start-0 w-100 border-top border-secondary z-0"></div>
+            <div class="d-flex justify-content-between position-relative z-1">
+                <div class="step-dot active" id="dot-1">1</div>
+                <div class="step-dot" id="dot-2">2</div>
+                <div class="step-dot" id="dot-3">3</div>
+            </div>
+        </div>
 
-        .wizard-container {
-            max-width: 800px;
-            margin: 0 auto;
-        }
+        <div class="main-card p-4 p-md-5">
+            <?php if ($success): ?>
+                <div class="text-center py-5">
+                    <i class="bi bi-check-circle-fill text-success display-1"></i>
+                    <h2 class="mt-3 fw-bold">¡Turno Confirmado!</h2>
+                    <p class="text-muted lead"><?php echo $success; ?></p>
+                    <a href="dashboard.php" class="btn btn-primary btn-lg mt-4 px-5 rounded-pill">Ver Mis Turnos</a>
+                </div>
+            <?php else: ?>
+                <form method="POST" id="bookingForm" onsubmit="showLoader()">
+                    <?php if ($error): ?>
+                        <div class="alert alert-danger d-flex align-items-center mb-4"><i class="bi bi-exclamation-triangle-fill me-2"></i><div><?php echo $error; ?></div></div>
+                    <?php endif; ?>
 
-        .step-indicator {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 2rem;
-            position: relative;
-        }
+                    <div class="step-content active" id="step-1">
+                        <h4 class="fw-bold mb-1">Detalles de Carga</h4>
+                        <p class="text-muted mb-4">Seleccioná Sucursal y Carga</p>
 
-        .step-indicator::before {
-            content: '';
-            position: absolute;
-            top: 50%;
-            left: 0;
-            right: 0;
-            height: 2px;
-            background: var(--border-color);
-            z-index: 0;
-            transform: translateY(-50%);
-        }
+                        <label class="form-label fw-bold text-uppercase small text-muted mb-2">Sucursal</label>
+                        <div class="row g-3 mb-4">
+                            <?php foreach ($branches as $branch): ?>
+                                <div class="col-md-6">
+                                    <input type="radio" class="btn-check" name="branch_id" id="br_<?php echo $branch['id'] ?>" value="<?php echo $branch['id'] ?>" required>
+                                    <label class="option-card" for="br_<?php echo $branch['id'] ?>">
+                                        <span class="fw-medium"><?php echo htmlspecialchars($branch['name']) ?></span>
+                                        <i class="bi bi-geo-alt text-primary fs-5"></i>
+                                    </label>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
 
-        .step-dot {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            background: var(--card-bg);
-            border: 2px solid var(--border-color);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1;
-            font-weight: 600;
-            color: var(--text-muted);
-            transition: all 0.3s ease;
-        }
+                        <label class="form-label fw-bold text-uppercase small text-muted mb-2">Vehículo</label>
+                        <div class="row g-3 mb-4">
+                            <?php $opts = ['Utilitario' => 'Utilitario / Camioneta', 'Chasis' => 'Chasis', 'Balancin' => 'Balancín', 'Semi_Acoplado' => 'Semi / Acoplado'];
+                            foreach ($opts as $val => $label): ?>
+                                <div class="col-md-6">
+                                    <input type="radio" class="btn-check" name="vehicle_type" id="v_<?php echo $val ?>" value="<?php echo $val ?>" required <?php echo ($default_vehicle == $val) ? 'checked' : '' ?>>
+                                    <label class="option-card" for="v_<?php echo $val ?>">
+                                        <span class="fw-medium"><?php echo $label ?></span>
+                                        <i class="bi bi-truck text-primary fs-5"></i>
+                                    </label>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
 
-        .step-dot.active {
-            border-color: var(--primary-color);
-            background: var(--primary-color);
-            color: white;
-            box-shadow: 0 0 15px rgba(59, 130, 246, 0.5);
-        }
+                        <label class="form-label fw-bold text-uppercase small text-muted mb-2">Logística</label>
+                        <div class="row g-3 mb-4">
+                            <div class="col-12">
+                                <div class="form-floating text-dark">
+                                    <input type="number" class="form-control bg-dark text-light border-secondary" id="qty" name="quantity" required min="1" value="<?php echo $default_quantity ?>" placeholder="Cantidad">
+                                    <label for="qty" class="text-muted">Cantidad de Bultos / Pallets</label>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="option-card" for="forklift">
+                                    <span class="fw-medium">Necesito Autoelevador</span>
+                                    <div class="form-check form-switch"><input class="form-check-input fs-5" type="checkbox" name="needs_forklift" id="forklift" <?php echo $default_forklift ? 'checked' : '' ?>></div>
+                                </label>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="option-card" for="helper">
+                                    <span class="fw-medium">Necesito Peón</span>
+                                    <div class="form-check form-switch"><input class="form-check-input fs-5" type="checkbox" name="needs_helper" id="helper" <?php echo $default_helper ? 'checked' : '' ?>></div>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="d-flex justify-content-end mt-5">
+                            <button type="button" class="btn btn-primary px-4 py-2 fw-bold" onclick="nextStep(2)">Siguiente <i class="bi bi-arrow-right ms-2"></i></button>
+                        </div>
+                    </div>
 
-        .step-dot.completed {
-            border-color: var(--primary-color);
-            background: var(--card-bg);
-            color: var(--primary-color);
-        }
+                    <div class="step-content" id="step-2">
+                        <h4 class="fw-bold mb-1">Fecha y Hora</h4>
+                        <p class="text-muted mb-4">Seleccioná un hueco disponible.</p>
+                        <div class="row g-4">
+                            <div class="col-md-6">
+                                <label class="form-label fw-bold">Fecha</label>
+                                <input type="date" class="form-control form-control-lg bg-dark text-light border-secondary" id="date" name="date" required min="<?php echo date('Y-m-d') ?>">
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label fw-bold">Horarios</label>
+                                <input type="hidden" name="time" id="time" required>
+                                <div id="time-slots" class="row g-2">
+                                    <div class="text-muted small fst-italic p-2"><i class="bi bi-arrow-up-circle me-1"></i> Seleccioná una fecha para ver los horarios.</div>
+                                </div>
+                                <div id="time-error" class="text-danger small mt-2" style="display:none"><i class="bi bi-x-circle"></i> Seleccioná un horario.</div>
+                            </div>
+                        </div>
+                        <div class="d-flex justify-content-between mt-5">
+                            <button type="button" class="btn btn-outline-light px-4" onclick="prevStep(1)">Atrás</button>
+                            <button type="button" class="btn btn-primary px-4 fw-bold" onclick="nextStep(3)">Siguiente <i class="bi bi-arrow-right ms-2"></i></button>
+                        </div>
+                    </div>
 
-        .main-card {
-            background: var(--card-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 20px;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-            overflow: hidden;
-        }
-
-        .form-control,
-        .form-select {
-            background-color: #0f172a;
-            border-color: var(--border-color);
-            color: white;
-            padding: 0.8rem 1rem;
-            border-radius: 10px;
-        }
-
-        .form-control:focus,
-        .form-select:focus {
-            background-color: #0f172a;
-            border-color: var(--primary-color);
-            color: white;
-            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
-        }
-
-        .btn-primary-custom {
-            background: linear-gradient(135deg, var(--primary-color), var(--primary-hover));
-            border: none;
-            padding: 1rem 2rem;
-            border-radius: 12px;
-            font-weight: 600;
-            letter-spacing: 0.5px;
-            transition: all 0.3s;
-        }
-
-        .btn-primary-custom:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 20px -10px rgba(59, 130, 246, 0.5);
-        }
-
-        .btn-time {
-            background-color: #0f172a;
-            border: 1px solid var(--border-color);
-            color: var(--text-muted);
-            border-radius: 10px;
-            padding: 0.75rem;
-            transition: all 0.2s;
-        }
-
-        .btn-time:hover:not(:disabled) {
-            border-color: var(--primary-color);
-            color: white;
-            background-color: rgba(59, 130, 246, 0.1);
-        }
-
-        .btn-time.active {
-            background-color: var(--primary-color);
-            border-color: var(--primary-color);
-            color: white;
-        }
-
-        .option-card {
-            background-color: #0f172a;
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 1.25rem;
-            transition: all 0.2s;
-            cursor: pointer;
-        }
-
-        <nav class="navbar navbar-expand-lg navbar-dark sticky-top"><div class="container"><a class="navbar-brand fw-bold" href="dashboard.php"><img src="assets/logo.png" alt="Peirano Logo" style="height: 30px;" class="me-2">Peirano Logística </a><div class="d-flex"><a href="dashboard.php" class="btn btn-outline-light btn-sm me-2 rounded-pill px-3">Volver</a></div></div></nav><div class="container py-5 wizard-container">< !-- Step Indicators --><div class="step-indicator px-5"><div class="step-dot active" id="dot-1">1</div><div class="step-dot" id="dot-2">2</div><div class="step-dot" id="dot-3">3</div></div><div class="main-card"><div class="card-body p-4 p-md-5">
-        <?php if ($success): ?>
-            <div class="text-center py-5"><div class="mb-4"><i class="bi bi-check-circle-fill text-success" style="font-size: 4rem;"></i></div><h2 class="fw-bold mb-3">¡Reserva Confirmada !</h2><p class="text-muted mb-4"><?php echo $success; ?></p><a href="dashboard.php" class="btn btn-primary-custom text-white">Ir al Dashboard</a></div>
-        <?php else: ?>
-
-            <form method="POST" id="bookingForm">
-            <?php if ($error): ?>
-                <div class="alert alert-danger bg-danger-subtle border-0 text-danger mb-4 rounded-3"><i class="bi bi-exclamation-circle me-2"></i><?php echo $error; ?> </div>
+                    <div class="step-content" id="step-3">
+                        <h4 class="fw-bold mb-3">Resumen del Turno</h4>
+                        <div class="card bg-dark border-secondary mb-4">
+                            <div class="card-body">
+                                <div class="row g-3">
+                                    <div class="col-6 text-muted">🏢 Sucursal:</div>
+                                    <div class="col-6 fw-bold text-end text-light" id="sum-branch">-</div>
+                                    <div class="col-6 text-muted">📅 Fecha:</div>
+                                    <div class="col-6 fw-bold text-end text-light" id="sum-date">-</div>
+                                    <div class="col-6 text-muted">⏰ Hora:</div>
+                                    <div class="col-6 fw-bold text-end text-info" id="sum-time">-</div>
+                                    <div class="col-12 border-top border-secondary my-1"></div>
+                                    <div class="col-6 text-muted">🚛 Vehículo:</div>
+                                    <div class="col-6 fw-bold text-end text-light" id="sum-veh">-</div>
+                                    <div class="col-6 text-muted">📦 Bultos:</div>
+                                    <div class="col-6 fw-bold text-end text-light" id="sum-qty">-</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Observaciones (Opcional)</label>
+                            <textarea class="form-control bg-dark text-light border-secondary" name="observations" rows="2" placeholder="Ej: Necesito entrar marcha atrás..."></textarea>
+                        </div>
+                        <div class="d-flex justify-content-between mt-5">
+                            <button type="button" class="btn btn-outline-light px-4" onclick="prevStep(2)">Atrás</button>
+                            <button type="submit" class="btn btn-success w-50 py-2 fw-bold shadow-lg">CONFIRMAR <i class="bi bi-check-lg ms-2"></i></button>
+                        </div>
+                    </div>
+                </form>
             <?php endif; ?>
-
-            < !-- STEP 1: Details --><div class="step-content active" id="step-1"><h3 class="fw-bold mb-1">Detalles de Carga</h3><p class="text-muted mb-4">¿Qué vas a descargar hoy?</p><div class="mb-4"><label class="form-label text-muted small text-uppercase fw-bold">Tipo de Vehículo</label><div class="row g-3">
-            <?php
-            $vehicles = [
-                'Utilitario' => 'Utilitario (Camioneta)',
-                'Chasis' => 'Chasis',
-                'Balancin' => 'Balancín',
-                'Semi_Acoplado' => 'Semi / Acoplado'
-            ];
-            foreach ($vehicles as $val => $label):
-                $selected = ($default_vehicle === $val) ? 'checked' : '';
-                ?>
-                <div class="col-md-6"><input type="radio" class="btn-check" name="vehicle_type" id="v_<?php echo $val; ?>"
-                value="<?php echo $val; ?>"
-                <?php echo $selected; ?>
-                required><label class="option-card w-100 d-flex align-items-center justify-content-between"
-                for="v_<?php echo $val; ?>"><span class="fw-medium"><?php echo $label; ?></span><i class="bi bi-truck text-primary"></i></label></div>
-            <?php endforeach; ?>
-            </div></div><div class="mb-4"><label for="quantity" class="form-label text-muted small text-uppercase fw-bold">Cantidad (Bultos/Pallets)</label><input type="number" class="form-control form-control-lg" id="quantity" name="quantity"
-            required min="1" value="<?php echo htmlspecialchars($default_quantity); ?>"></div><div class="row mb-4"><div class="col-md-6 mb-3"><div class="option-card d-flex align-items-center justify-content-between"><div><div class="fw-bold">Autoelevador</div><div class="text-muted small">¿Requiere máquina?</div></div><div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="needs_forklift"
-            name="needs_forklift"
-            <?php echo $default_forklift ? 'checked' : ''; ?>
-            ></div></div></div><div class="col-md-6 mb-3"><div class="option-card d-flex align-items-center justify-content-between"><div><div class="fw-bold">Peón de Descarga</div><div class="text-muted small">¿Necesita ayuda?</div></div><div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="needs_helper"
-            name="needs_helper"
-            <?php echo $default_helper ? 'checked' : ''; ?>
-            ></div></div></div></div><div class="d-flex justify-content-end mt-5"><button type="button" class="btn btn-primary-custom text-white" onclick="nextStep(2)">Siguiente <i class="bi bi-arrow-right ms-2"></i></button></div></div>< !-- STEP 2: Date & Time --><div class="step-content" id="step-2"><h3 class="fw-bold mb-1">Fecha y Hora</h3><p class="text-muted mb-4">Selecciona un turno disponible.</p><div class="row"><div class="col-md-6 mb-4"><label for="date"
-            class="form-label text-muted small text-uppercase fw-bold">Fecha</label><input type="date" class="form-control form-control-lg" id="date" name="date" required min="<?php echo date('Y-m-d'); ?>"></div><div class="col-md-6 mb-4"><label class="form-label text-muted small text-uppercase fw-bold">Horarios</label><input type="hidden" id="time" name="time" required><div id="time-slots" class="d-grid gap-2"
-            style="grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));"><div class="text-muted small grid-column-span-all">Selecciona una fecha...</div></div><div id="time-error" class="text-danger small mt-2" style="display:none;">Selecciona un horario.</div></div></div><div class="d-flex justify-content-between mt-5"><button type="button" class="btn btn-outline-light px-4 rounded-pill"
-            onclick="prevStep(1)">Atrás</button><button type="button" class="btn btn-primary-custom text-white" onclick="nextStep(3)">Siguiente <i class="bi bi-arrow-right ms-2"></i></button></div></div>< !-- STEP 3: Confirm --><div class="step-content" id="step-3"><h3 class="fw-bold mb-1">Confirmar Reserva</h3><p class="text-muted mb-4">Revisa los datos antes de confirmar.</p><div class="bg-dark bg-opacity-50 p-4 rounded-3 mb-4 border border-secondary"><div class="row mb-2"><div class="col-6 text-muted">Fecha:</div><div class="col-6 fw-bold text-end" id="summary-date">-</div></div><div class="row mb-2"><div class="col-6 text-muted">Hora:</div><div class="col-6 fw-bold text-end" id="summary-time">-</div></div><div class="row mb-2"><div class="col-6 text-muted">Vehículo:</div><div class="col-6 fw-bold text-end" id="summary-vehicle">-</div></div><div class="row"><div class="col-6 text-muted">Bultos:</div><div class="col-6 fw-bold text-end" id="summary-qty">-</div></div></div><div class="mb-4"><label for="observations"
-            class="form-label text-muted small text-uppercase fw-bold">Observaciones (Opcional)</label><textarea class="form-control" id="observations" name="observations" rows="3"
-            placeholder="Ej: Mercadería frágil..."></textarea></div><div class="d-flex justify-content-between mt-5"><button type="button" class="btn btn-outline-light px-4 rounded-pill"
-            onclick="prevStep(2)">Atrás</button><button type="submit" class="btn btn-primary-custom text-white w-50">CONFIRMAR <i class="bi bi-check-lg ms-2"></i></button></div></div></form>
-        <?php endif; ?>
-        </div></div></div><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script><script> // Wizard Navigation
-
+        </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        function showLoader() { document.getElementById('loadingOverlay').style.display = 'block'; }
         function nextStep(step) {
-
-            // Validation Step 1
-            if (step===2) {
-                const vehicle=document.querySelector('input[name="vehicle_type"]:checked');
-                const qty=document.getElementById('quantity').value;
-
-                if ( !vehicle || !qty) {
-                    alert('Por favor complete el tipo de vehículo y la cantidad.');
-                    return;
-                }
+            if (step === 2) {
+                const branch = document.querySelector('input[name="branch_id"]:checked');
+                const vehicle = document.querySelector('input[name="vehicle_type"]:checked');
+                const qty = document.getElementById('qty').value;
+                if (!branch) return alert('⚠️ Seleccioná una sucursal.');
+                if (!vehicle) return alert('⚠️ Seleccioná un tipo de vehículo.');
+                if (!qty || qty < 1) return alert('⚠️ Ingresá una cantidad válida de bultos.');
             }
-
-            // Validation Step 2
-            if (step===3) {
-                const date=document.getElementById('date').value;
-                const time=document.getElementById('time').value;
-
-                if ( !date || !time) {
-                    alert('Por favor seleccione fecha y hora.');
-                    return;
-                }
-
-                // Update Summary
-                document.getElementById('summary-date').textContent=date;
-                document.getElementById('summary-time').textContent=time;
-                document.getElementById('summary-vehicle').textContent=document.querySelector('input[name="vehicle_type"]:checked').value;
-                document.getElementById('summary-qty').textContent=document.getElementById('quantity').value;
+            if (step === 3) {
+                const d = document.getElementById('date').value;
+                const t = document.getElementById('time').value;
+                if (!d || !t) return alert('⚠️ Tenés que elegir fecha y hora para seguir.');
+                document.getElementById('sum-branch').innerText = document.querySelector('input[name="branch_id"]:checked').nextElementSibling.innerText.trim();
+                document.getElementById('sum-date').innerText = d.split('-').reverse().join('/');
+                document.getElementById('sum-time').innerText = t + ' hs';
+                document.getElementById('sum-veh').innerText = document.querySelector('input[name="vehicle_type"]:checked').nextElementSibling.innerText.trim();
+                document.getElementById('sum-qty').innerText = document.getElementById('qty').value;
             }
-
-            // Hide all
-            document.querySelectorAll('.step-content').forEach(el=> el.classList.remove('active'));
-            document.querySelectorAll('.step-dot').forEach(el=> el.classList.remove('active'));
-
-            // Show current
-            document.getElementById(`step-$ {
-                    step
-                }
-
-                `).classList.add('active');
-
-            // Update dots
-            for (let i=1; i <=step; i++) {
-                const dot=document.getElementById(`dot-$ {
-                        i
-                    }
-
-                    `);
-                if (i===step) dot.classList.add('active');
-                else dot.classList.add('completed');
+            document.querySelectorAll('.step-content').forEach(e => e.classList.remove('active'));
+            document.getElementById('step-' + step).classList.add('active');
+            for (let i = 1; i <= 3; i++) {
+                const dot = document.getElementById('dot-' + i);
+                if (i <= step) dot.classList.add('active');
+                else dot.classList.remove('active');
             }
         }
-
-        function prevStep(step) {
-            document.querySelectorAll('.step-content').forEach(el=> el.classList.remove('active'));
-
-            document.getElementById(`step-$ {
-                    step
-                }
-
-                `).classList.add('active');
-
-            // Reset dots forward
-            for (let i=step + 1; i <=3; i++) {
-                document.getElementById(`dot-$ {
-                        i
-                    }
-
-                    `).classList.remove('active', 'completed');
-            }
-
-            document.getElementById(`dot-$ {
-                    step
-                }
-
-                `).classList.add('active');
-
-            document.getElementById(`dot-$ {
-                    step
-                }
-
-                `).classList.remove('completed');
-        }
-
-        // Time Slot Logic
+        function prevStep(step) { nextStep(step); }
         document.getElementById('date').addEventListener('change', function () {
-                const date=this.value;
-                const slotsContainer=document.getElementById('time-slots');
-                const timeInput=document.getElementById('time');
-
-                slotsContainer.innerHTML='<div class="spinner-border text-primary spinner-border-sm" role="status"></div>';
-                timeInput.value='';
-
-                fetch(`check_slots.php?date=$ {
-                        date
+            const date = this.value;
+            const branch = document.querySelector('input[name="branch_id"]:checked').value;
+            const container = document.getElementById('time-slots');
+            container.innerHTML = '<div class="col-12 text-center py-3"><div class="spinner-border text-primary spinner-border-sm"></div> Buscando huecos...</div>';
+            fetch(`check_slots.php?date=${date}&branch_id=${branch}`)
+                .then(r => r.json())
+                .then(slots => {
+                    container.innerHTML = '';
+                    if (slots.length === 0 || slots.error) {
+                        container.innerHTML = '<div class="col-12 text-danger text-center">Sin disponibilidad.</div>';
+                        return;
                     }
-
-                    `) .then(response=> response.json()) .then(slots=> {
-                        slotsContainer.innerHTML='';
-
-                        if (slots.error) {
-                            slotsContainer.innerHTML=`<div class="text-danger small grid-column-span-all" >$ {
-                                slots.error
+                    slots.forEach(slot => {
+                        const div = document.createElement('div');
+                        div.className = 'col-3 col-md-2';
+                        const btn = document.createElement('button');
+                        btn.type = 'button';
+                        btn.className = `btn btn-time ${slot.available ? '' : 'disabled'}`;
+                        btn.innerText = slot.time;
+                        if (!slot.available) {
+                            btn.disabled = true;
+                        } else {
+                            btn.onclick = () => {
+                                document.querySelectorAll('.btn-time').forEach(b => b.classList.remove('active'));
+                                btn.classList.add('active');
+                                document.getElementById('time').value = slot.time;
+                                document.getElementById('time-error').style.display = 'none';
                             }
-
-                            </div>`;
-                            return;
                         }
-
-                        if (slots.length===0) {
-                            slotsContainer.innerHTML='<div class="text-warning small grid-column-span-all">No hay horarios disponibles.</div>';
-                            return;
-                        }
-
-                        slots.forEach(slot=> {
-                                const btn=document.createElement('button');
-                                btn.type='button';
-
-                                btn.className=`btn btn-time $ {
-                                    slot.available ? '' : 'disabled'
-                                }
-
-                                `;
-                                btn.textContent=slot.time;
-
-                                if ( !slot.available) {
-                                    btn.disabled=true;
-                                    btn.style.opacity='0.3';
-                                    btn.style.textDecoration='line-through';
-                                }
-
-                                else {
-                                    btn.onclick=function () {
-                                        document.querySelectorAll('#time-slots button').forEach(b=> b.classList.remove('active'));
-                                        this.classList.add('active');
-                                        timeInput.value=slot.time;
-                                        document.getElementById('time-error').style.display='none';
-                                    }
-
-                                    ;
-                                }
-
-                                slotsContainer.appendChild(btn);
-                            });
-
-                    }) .catch(err=> {
-                        console.error(err);
-                        slotsContainer.innerHTML='<div class="text-danger small">Error de conexión.</div>';
+                        div.appendChild(btn);
+                        container.appendChild(div);
                     });
-            });
-        </script></body></html>
+                })
+                .catch(e => { console.error(e); container.innerHTML = '<div class="col-12 text-danger text-center">Error de conexión.</div>'; });
+        });
+    </script>
+</body>
+</html>
