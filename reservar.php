@@ -1,5 +1,6 @@
 <?php
 require_once 'auth.php';
+require_once 'debug_mode.php'; // Temporary debug
 checkSession();
 require_once 'graph_sync.php';
 
