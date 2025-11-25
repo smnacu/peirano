@@ -113,5 +113,60 @@ class OutlookSync
 
         return true;
     }
+
+    public function getDailyAvailability($date)
+    {
+        $token = $this->getAccessToken();
+        if (!$token)
+            return [];
+
+        // Definir rango del día completo (00:00 a 23:59) para buscar eventos
+        $startDateTime = $date . 'T00:00:00';
+        $endDateTime = $date . 'T23:59:59';
+
+        $url = "https://graph.microsoft.com/v1.0/users/{$this->userId}/calendarView?startDateTime={$startDateTime}&endDateTime={$endDateTime}";
+
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            "Authorization: Bearer $token",
+            "Content-Type: application/json"
+        ]);
+
+        $response = curl_exec($ch);
+        curl_close($ch);
+
+        $json = json_decode($response, true);
+        $events = $json['value'] ?? [];
+
+        // Generar slots de 07:00 a 18:00
+        $slots = [];
+        for ($hour = 7; $hour <= 18; $hour++) {
+            $time = sprintf('%02d:00', $hour);
+            $slotStart = strtotime("$date $time");
+            $slotEnd = $slotStart + 3600; // 1 hora de duración
+
+            $isBusy = false;
+            foreach ($events as $event) {
+                // Convertir tiempos del evento a timestamp
+                $eventStart = strtotime($event['start']['dateTime']);
+                $eventEnd = strtotime($event['end']['dateTime']);
+
+                // Verificar superposición
+                if ($slotStart < $eventEnd && $slotEnd > $eventStart) {
+                    $isBusy = true;
+                    break;
+                }
+            }
+
+            $slots[] = [
+                'time' => $time,
+                'available' => !$isBusy
+            ];
+        }
+
+        return $slots;
+    }
 }
 ?>
