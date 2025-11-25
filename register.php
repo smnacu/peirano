@@ -2,10 +2,10 @@
 // register.php
 require_once 'auth.php';
 
-if (isset($_SESSION['user_id'])) {
-    header("Location: dashboard.php");
-    exit();
-}
+// if (isset($_SESSION['user_id'])) {
+//     header("Location: dashboard.php");
+//     exit();
+// }
 
 $message = '';
 $error = '';
