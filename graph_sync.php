@@ -8,6 +8,14 @@ class OutlookSync
 
     private $accessToken = null;
 
+    public function __construct()
+    {
+        $this->tenantId = TENANT_ID;
+        $this->clientId = CLIENT_ID;
+        $this->clientSecret = CLIENT_SECRET;
+        $this->userId = CALENDAR_USER_ID;
+    }
+
     private function getAccessToken()
     {
         if ($this->accessToken)

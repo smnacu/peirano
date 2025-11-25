@@ -254,24 +254,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             display: none;
             animation: fadeIn 0.4s ease;
         }
-
-        .step-content.active {
-            display: block;
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-    </style>
-</head>
-
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark">
-        <div class="container">
-            <a class="navbar-brand fw-bold" href="dashboard.php">
-                <i class="bi bi-box-seam-fill me-2 text-primary"></i>Peirano Logística
-            </a>
             <div class="d-flex">
                 <a href="dashboard.php" class="btn btn-outline-light btn-sm me-2 rounded-pill px-3">Volver</a>
             </div>
@@ -440,6 +422,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </div>
 
                     </form>
+                    <script>
+                        document.getElementById('bookingForm').addEventListener('submit', function() {
+                            document.getElementById('loadingOverlay').style.display = 'flex';
+                        });
+                    </script>
                 <?php endif; ?>
             </div>
         </div>
