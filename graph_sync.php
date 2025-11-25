@@ -120,7 +120,7 @@ class OutlookSync
         if (!$token)
             return ['error' => 'No se pudo obtener el token de acceso a Microsoft Graph.'];
 
-        // Definir rango del día completo (00:00 a 23:59) para buscar eventos
+        // Definir rango del día completo (00:00 a 23:59) en hora local
         $startDateTime = $date . 'T00:00:00';
         $endDateTime = $date . 'T23:59:59';
 
@@ -131,7 +131,8 @@ class OutlookSync
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_HTTPHEADER, [
             "Authorization: Bearer $token",
-            "Content-Type: application/json"
+            "Content-Type: application/json",
+            "Prefer: outlook.timezone=\"Argentina Standard Time\"" // Importante: Pedir horas en local
         ]);
 
         $response = curl_exec($ch);
@@ -155,12 +156,14 @@ class OutlookSync
 
             $isBusy = false;
             foreach ($events as $event) {
-                // Convertir tiempos del evento a timestamp
+                // Las fechas ya vienen en hora local gracias al header Prefer
                 $eventStart = strtotime($event['start']['dateTime']);
                 $eventEnd = strtotime($event['end']['dateTime']);
 
                 // Verificar superposición
-                if ($slotStart < $eventEnd && $slotEnd > $eventStart) {
+                // Un slot está ocupado si el evento empieza antes de que termine el slot
+                // Y el evento termina después de que empiece el slot
+                if ($eventStart < $slotEnd && $eventEnd > $slotStart) {
                     $isBusy = true;
                     break;
                 }
