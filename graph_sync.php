@@ -118,7 +118,7 @@ class OutlookSync
     {
         $token = $this->getAccessToken();
         if (!$token)
-            return [];
+            return ['error' => 'No se pudo obtener el token de acceso a Microsoft Graph.'];
 
         // Definir rango del día completo (00:00 a 23:59) para buscar eventos
         $startDateTime = $date . 'T00:00:00';
@@ -135,9 +135,15 @@ class OutlookSync
         ]);
 
         $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
 
         $json = json_decode($response, true);
+
+        if ($httpCode >= 400) {
+            return ['error' => 'Error de API Microsoft: ' . ($json['error']['message'] ?? 'Desconocido')];
+        }
+
         $events = $json['value'] ?? [];
 
         // Generar slots de 07:00 a 18:00

@@ -19,10 +19,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = "Por favor complete todos los campos obligatorios.";
     } else {
         $start_time = $date . ' ' . $time . ':00';
-        $end_time = date('Y-m-d H:i:s', strtotime($start_time) + 3600);
+        
+        // Lógica de duración dinámica
+        if ($vehicle_type === 'Utilitario') {
+            $block_minutes = 30;
+            $real_minutes = 25;
+        } else {
+            $block_minutes = 60;
+            $real_minutes = 55;
+        }
+
+        // Tiempo para verificar disponibilidad (bloque completo)
+        $check_end_time = date('Y-m-d H:i:s', strtotime($start_time) + ($block_minutes * 60));
+        
+        // Tiempo real del turno (con buffer)
+        $event_end_time = date('Y-m-d H:i:s', strtotime($start_time) + ($real_minutes * 60));
 
         $outlook = new OutlookSync();
-        $isAvailable = $outlook->checkAvailability($start_time, $end_time);
+        $isAvailable = $outlook->checkAvailability($start_time, $check_end_time);
 
         if ($isAvailable === false) {
             $error = "El horario seleccionado no está disponible en el calendario.";
@@ -30,14 +44,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             try {
                 $sql = "INSERT INTO appointments (user_id, start_time, end_time, vehicle_type, needs_forklift, needs_helper, quantity, observations) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
                 $stmt = $pdo->prepare($sql);
-                $stmt->execute([$_SESSION['user_id'], $start_time, $end_time, $vehicle_type, $needs_forklift, $needs_helper, $quantity, $observations]);
+                $stmt->execute([$_SESSION['user_id'], $start_time, $event_end_time, $vehicle_type, $needs_forklift, $needs_helper, $quantity, $observations]);
 
                 $appointment_id = $pdo->lastInsertId();
 
                 $subject = "Turno: " . $_SESSION['company_name'];
                 $description = "Vehículo: $vehicle_type<br>Bultos: $quantity<br>Autoelevador: " . ($needs_forklift ? 'SI' : 'NO') . "<br>Peón: " . ($needs_helper ? 'SI' : 'NO') . "<br>Obs: $observations";
 
-                $event_id = $outlook->createEvent($subject, $start_time, $end_time, $description);
+                $event_id = $outlook->createEvent($subject, $start_time, $event_end_time, $description);
 
                 if ($event_id) {
                     $update = $pdo->prepare("UPDATE appointments SET outlook_event_id = ? WHERE id = ?");
@@ -92,55 +106,75 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <?php else: ?>
 
                     <form method="POST">
-                        <option value="Utilitario">Utilitario (Camioneta)</option>
-                        <option value="Chasis">Chasis</option>
-                        <option value="Balancin">Balancín</option>
-                        <option value="Semi_Acoplado">Semi / Acoplado</option>
-                        </select>
-                </div>
+                        <div class="row mb-3">
+                            <div class="col-md-6 mb-3">
+                                <label for="date" class="form-label fw-bold">Fecha</label>
+                                <input type="date" class="form-control form-control-lg" id="date" name="date" required
+                                    min="<?php echo date('Y-m-d'); ?>">
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label fw-bold">Horario</label>
+                                <input type="hidden" id="time" name="time" required>
+                                <div id="time-slots" class="d-flex flex-wrap gap-2">
+                                    <div class="text-muted">Seleccione una fecha para ver horarios disponibles.</div>
+                                </div>
+                                <div id="time-error" class="text-danger mt-2" style="display:none;">Por favor seleccione un horario.</div>
+                            </div>
+                        </div>
 
-                <div class="mb-3">
-                    <label for="quantity" class="form-label fw-bold">Cantidad de Bultos / Pallets</label>
-                    <input type="number" class="form-control form-control-lg" id="quantity" name="quantity" required
-                        min="1">
-                </div>
+                        <div class="mb-3">
+                            <label for="vehicle_type" class="form-label fw-bold">Tipo de Vehículo</label>
+                            <select class="form-select form-select-lg" id="vehicle_type" name="vehicle_type" required>
+                                <option value="">Seleccione...</option>
+                                <option value="Utilitario">Utilitario (Camioneta)</option>
+                                <option value="Chasis">Chasis</option>
+                                <option value="Balancin">Balancín</option>
+                                <option value="Semi_Acoplado">Semi / Acoplado</option>
+                            </select>
+                        </div>
 
-                <div class="mb-3 p-3 border rounded bg-light">
-                    <div class="form-check form-switch mb-2">
-                        <input class="form-check-input" type="checkbox" id="needs_forklift" name="needs_forklift"
-                            style="width: 3em; height: 1.5em;">
-                        <label class="form-check-label ms-2 pt-1" for="needs_forklift">¿Requiere
-                            Autoelevador?</label>
-                    </div>
-                    <div class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" id="needs_helper" name="needs_helper"
-                            style="width: 3em; height: 1.5em;">
-                        <label class="form-check-label ms-2 pt-1" for="needs_helper">¿Requiere Peón de
-                            descarga?</label>
-                    </div>
-                </div>
+                        <div class="mb-3">
+                            <label for="quantity" class="form-label fw-bold">Cantidad de Bultos / Pallets</label>
+                            <input type="number" class="form-control form-control-lg" id="quantity" name="quantity" required
+                                min="1">
+                        </div>
 
-                <div class="mb-4">
-                    <label for="observations" class="form-label fw-bold">Observaciones / Detalle de Carga</label>
-                    <textarea class="form-control form-control-lg" id="observations" name="observations" rows="3"
-                        placeholder="Ej: Traigo mercadería frágil..."></textarea>
-                </div>
+                        <div class="mb-3 p-3 border rounded bg-light">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="needs_forklift" name="needs_forklift"
+                                    style="width: 3em; height: 1.5em;">
+                                <label class="form-check-label ms-2 pt-1" for="needs_forklift">¿Requiere
+                                    Autoelevador?</label>
+                            </div>
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="needs_helper" name="needs_helper"
+                                    style="width: 3em; height: 1.5em;">
+                                <label class="form-check-label ms-2 pt-1" for="needs_helper">¿Requiere Peón de
+                                    descarga?</label>
+                            </div>
+                        </div>
 
-                <div class="d-grid">
-                    <button type="submit" class="btn btn-primary btn-lg py-3 fw-bold">CONFIRMAR RESERVA</button>
-                </div>
-                </form>
-            <?php endif; ?>
+                        <div class="mb-4">
+                            <label for="observations" class="form-label fw-bold">Observaciones / Detalle de Carga</label>
+                            <textarea class="form-control form-control-lg" id="observations" name="observations" rows="3"
+                                placeholder="Ej: Traigo mercadería frágil..."></textarea>
+                        </div>
+
+                        <div class="d-grid">
+                            <button type="submit" class="btn btn-primary btn-lg py-3 fw-bold">CONFIRMAR RESERVA</button>
+                        </div>
+                    </form>
+                <?php endif; ?>
+            </div>
         </div>
-    </div>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        document.getElementById('date').addEventListener('change', function () {
+        document.getElementById('date').addEventListener('change', function() {
             const date = this.value;
             const slotsContainer = document.getElementById('time-slots');
             const timeInput = document.getElementById('time');
-
+            
             // Reset
             slotsContainer.innerHTML = '<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Cargando...</span></div>';
             timeInput.value = '';
@@ -149,7 +183,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 .then(response => response.json())
                 .then(slots => {
                     slotsContainer.innerHTML = '';
-
+                    
                     if (slots.error) {
                         slotsContainer.innerHTML = `<div class="text-danger">${slots.error}</div>`;
                         return;
@@ -165,12 +199,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         btn.type = 'button';
                         btn.className = `btn ${slot.available ? 'btn-outline-success' : 'btn-outline-danger disabled'} flex-grow-1`;
                         btn.textContent = slot.time;
-
+                        
                         if (!slot.available) {
                             btn.disabled = true;
                             btn.title = 'Ocupado';
                         } else {
-                            btn.onclick = function () {
+                            btn.onclick = function() {
                                 // Remove active class from all
                                 document.querySelectorAll('#time-slots button').forEach(b => {
                                     if (!b.disabled) {
@@ -181,12 +215,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 // Add active class to clicked
                                 this.classList.remove('btn-outline-success');
                                 this.classList.add('btn-success', 'text-white');
-
+                                
                                 timeInput.value = slot.time;
                                 document.getElementById('time-error').style.display = 'none';
                             };
                         }
-
+                        
                         slotsContainer.appendChild(btn);
                     });
                 })
@@ -197,7 +231,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         });
 
         // Form validation
-        document.querySelector('form').addEventListener('submit', function (e) {
+        document.querySelector('form').addEventListener('submit', function(e) {
             const timeInput = document.getElementById('time');
             if (!timeInput.value) {
                 e.preventDefault();
