@@ -1,69 +1,86 @@
 <?php
-// register.php
-require_once 'auth.php';
+require_once __DIR__ . '/includes/config.php';
+require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . '/includes/functions.php';
 
-// if (isset($_SESSION['user_id'])) {
-//     header("Location: dashboard.php");
-//     exit();
-// }
+if (isset($_SESSION['user_id'])) {
+    redirect('dashboard.php');
+}
 
-$message = '';
 $error = '';
+$success = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $cuit = $_POST['cuit'];
-    $password = $_POST['password'];
-    $company_name = $_POST['company_name'];
-    $phone = $_POST['phone'];
-
-    $result = register($cuit, $password, $company_name, $phone);
-    if ($result['success']) {
-        $message = $result['message'];
+    if (!verifyCsrfToken($_POST['csrf_token'])) {
+        $error = "Error de seguridad (CSRF).";
     } else {
-        $error = $result['message'];
+        $cuit = $_POST['cuit'];
+        $password = $_POST['password'];
+        $company_name = $_POST['company_name'];
+        $phone = $_POST['phone'];
+
+        if (empty($cuit) || empty($password) || empty($company_name) || empty($phone)) {
+            $error = "Todos los campos son obligatorios.";
+        } else {
+            $result = register($cuit, $password, $company_name, $phone);
+            if ($result['success']) {
+                $success = $result['message'];
+            } else {
+                $error = $result['message'];
+            }
+        }
     }
 }
+
+$pageTitle = 'Registro - Peirano Logística';
+require_once __DIR__ . '/templates/header.php';
 ?>
-<!DOCTYPE html>
-<html lang="es">
-<h4 class="mb-0">Registro de Proveedor</h4>
-</div>
-<div class="card-body p-4">
-    <?php if ($message): ?>
-        <div class="alert alert-success">
-            <?php echo $message; ?> <a href="index.php">Iniciar Sesión</a>
+
+<div class="container d-flex align-items-center justify-content-center min-vh-100 py-5">
+    <div class="card shadow-lg p-4" style="max-width: 500px; width: 100%;">
+        <div class="text-center mb-4">
+            <h3 class="fw-bold">Crear Cuenta</h3>
+            <p class="text-muted">Unite a la plataforma de turnos</p>
         </div>
-    <?php endif; ?>
-    <?php if ($error): ?>
-        <div class="alert alert-danger"><?php echo $error; ?></div>
-    <?php endif; ?>
-    <form method="POST">
-        <div class="mb-3">
-            <label for="company_name" class="form-label">Razón Social</label>
-            <input type="text" class="form-control" id="company_name" name="company_name" required>
+
+        <?php if ($error): ?>
+            <div class="alert alert-danger"><?php echo $error; ?></div>
+        <?php endif; ?>
+        <?php if ($success): ?>
+            <div class="alert alert-success">
+                <?php echo $success; ?>
+                <div class="mt-2"><a href="index.php" class="btn btn-sm btn-success">Ir al Login</a></div>
+            </div>
+        <?php else: ?>
+            <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
+                <div class="mb-3">
+                    <label class="form-label">Razón Social / Nombre</label>
+                    <input type="text" class="form-control bg-dark text-light border-secondary" name="company_name"
+                        required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">CUIT</label>
+                    <input type="text" class="form-control bg-dark text-light border-secondary" name="cuit" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Teléfono</label>
+                    <input type="text" class="form-control bg-dark text-light border-secondary" name="phone" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Contraseña</label>
+                    <input type="password" class="form-control bg-dark text-light border-secondary" name="password"
+                        required>
+                </div>
+                <button type="submit" class="btn btn-primary w-100 py-2 fw-bold">Registrarse</button>
+            </form>
+        <?php endif; ?>
+
+        <div class="text-center mt-4">
+            <a href="index.php" class="text-decoration-none text-muted small hover-text-light">¿Ya tenés cuenta? Ingresá
+                acá</a>
         </div>
-        <div class="mb-3">
-            <label for="cuit" class="form-label">CUIT</label>
-            <input type="text" class="form-control" id="cuit" name="cuit" required placeholder="Sin guiones">
-        </div>
-        <div class="mb-3">
-            <label for="phone" class="form-label">Teléfono</label>
-            <input type="text" class="form-control" id="phone" name="phone" required>
-        </div>
-        <div class="mb-3">
-            <label for="password" class="form-label">Contraseña</label>
-            <input type="password" class="form-control" id="password" name="password" required>
-        </div>
-        <div class="d-grid">
-            <button type="submit" class="btn btn-success">Registrarse</button>
-        </div>
-    </form>
-    <div class="text-center mt-3">
-        <a href="index.php" class="text-decoration-none">Volver al Login</a>
     </div>
 </div>
-</div>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-</body>
 
-</html>
+<?php require_once __DIR__ . '/templates/footer.php'; ?>

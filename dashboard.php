@@ -1,93 +1,86 @@
 <?php
-// dashboard.php
-require_once 'auth.php';
+require_once __DIR__ . '/includes/config.php';
+require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . '/includes/functions.php';
+
 checkSession();
 
-$user_id = $_SESSION['user_id'];
-$company_name = $_SESSION['company_name'];
-
 $pdo = DB::connect();
-$stmt = $pdo->prepare("SELECT * FROM appointments WHERE user_id = ? ORDER BY start_time DESC");
-$stmt->execute([$user_id]);
+$userId = $_SESSION['user_id'];
+$today = date('Y-m-d');
+
+// Fetch upcoming appointments
+$stmt = $pdo->prepare("
+    SELECT a.*, b.name as branch_name 
+    FROM appointments a 
+    LEFT JOIN branches b ON a.branch_id = b.id
+    WHERE a.user_id = ? AND a.start_time >= ? 
+    ORDER BY a.start_time ASC
+");
+$stmt->execute([$userId, $today]);
 $appointments = $stmt->fetchAll();
+
+$pageTitle = 'Mis Turnos - Peirano Logística';
+require_once __DIR__ . '/templates/header.php';
+require_once __DIR__ . '/templates/nav.php';
 ?>
-<!DOCTYPE html>
-<html lang="es">
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard - Peirano Logística</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-
-<body class="bg-light">
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark shadow-sm">
-        <div class="container">
-            <a class="navbar-brand fw-bold" href="#">Peirano Logística</a>
-            <div class="d-flex align-items-center">
-                <span class="navbar-text me-3 text-light d-none d-md-block">Hola,
-                    <strong><?php echo htmlspecialchars($company_name); ?></strong></span>
-                <a href="logout.php" class="btn btn-outline-light btn-sm">Salir</a>
-            </div>
+<div class="container py-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2 class="fw-bold">Mis Turnos</h2>
+        <div class="d-flex gap-2">
+            <?php if (in_array($_SESSION['role'], ['admin', 'operator'])): ?>
+                <a href="admin_panel.php" class="btn btn-outline-info"><i class="bi bi-shield-lock me-2"></i>Admin Panel</a>
+            <?php endif; ?>
+            <a href="reservar.php" class="btn btn-primary"><i class="bi bi-plus-lg me-2"></i>Nuevo Turno</a>
         </div>
-    </nav>
+    </div>
 
-    <div class="container mt-4">
-        <div class="row align-items-center mb-4">
-            <div class="col">
-                <h3 class="fw-bold text-secondary">Mis Turnos</h3>
-            </div>
-            <div class="col-auto">
-                <a href="reservar.php" class="btn btn-primary btn-lg shadow-sm fw-bold">+ Nuevo Turno</a>
-            </div>
-        </div>
-
+    <div class="row g-4">
         <?php if (count($appointments) > 0): ?>
-            <div class="card shadow-sm border-0">
-                <div class="card-body p-0">
-                    <div class="table-responsive">
-                        <table class="table table-striped table-hover mb-0 align-middle">
-                            <thead class="table-dark">
-                                <tr>
-                                    <th class="py-3 ps-3">Fecha</th>
-                                    <th class="py-3">Hora</th>
-                                    <th class="py-3">Vehículo</th>
-                                    <th class="py-3">Bultos</th>
-                                    <th class="py-3 pe-3">Estado</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($appointments as $appt): ?>
-                                    <?php $date = new DateTime($appt['start_time']); ?>
-                                    <tr>
-                                        <td class="ps-3 fw-bold"><?php echo $date->format('d/m/Y'); ?></td>
-                                        <td><?php echo $date->format('H:i'); ?></td>
-                                        <td><?php echo $appt['vehicle_type']; ?></td>
-                                        <td><?php echo $appt['quantity']; ?></td>
-                                        <td class="pe-3">
-                                            <?php if ($appt['outlook_event_id']): ?>
-                                                <span class="badge bg-success rounded-pill px-3">Confirmado</span>
-                                            <?php else: ?>
-                                                <span class="badge bg-warning text-dark rounded-pill px-3">Pendiente Sync</span>
-                                            <?php endif; ?>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+            <?php foreach ($appointments as $appt): ?>
+                <div class="col-md-6 col-lg-4">
+                    <div class="card h-100 shadow-sm hover-shadow transition-all">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-start mb-3">
+                                <span
+                                    class="badge bg-primary rounded-pill"><?php echo htmlspecialchars($appt['branch_name']); ?></span>
+                                <span
+                                    class="badge bg-dark border border-secondary"><?php echo date('d/m/Y', strtotime($appt['start_time'])); ?></span>
+                            </div>
+                            <h3 class="fw-bold text-info mb-1"><?php echo date('H:i', strtotime($appt['start_time'])); ?> hs
+                            </h3>
+                            <p class="text-muted small mb-3">Duración:
+                                <?php echo (strtotime($appt['end_time']) - strtotime($appt['start_time'])) / 60; ?> min</p>
+
+                            <div class="d-flex align-items-center gap-2 mb-2">
+                                <i class="bi bi-truck text-secondary"></i>
+                                <span><?php echo $appt['vehicle_type']; ?></span>
+                            </div>
+                            <div class="d-flex align-items-center gap-2">
+                                <i class="bi bi-box-seam text-secondary"></i>
+                                <span><?php echo $appt['quantity']; ?> bultos</span>
+                            </div>
+
+                            <?php if ($appt['driver_name']): ?>
+                                <hr class="border-secondary my-3">
+                                <div class="small text-muted">
+                                    <i class="bi bi-person me-1"></i> <?php echo htmlspecialchars($appt['driver_name']); ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
                     </div>
                 </div>
-            </div>
+            <?php endforeach; ?>
         <?php else: ?>
-            <div class="alert alert-info shadow-sm border-0">
-                <h5 class="alert-heading">👋 ¡Bienvenido!</h5>
-                <p class="mb-0">Aún no tienes turnos registrados. Presiona el botón <strong>+ Nuevo Turno</strong> para
-                    comenzar.</p>
+            <div class="col-12 text-center py-5">
+                <div class="text-muted mb-3"><i class="bi bi-calendar-x display-1"></i></div>
+                <h4>No tenés turnos próximos</h4>
+                <p class="text-muted">Reservá tu primer turno para comenzar.</p>
+                <a href="reservar.php" class="btn btn-primary mt-3">Reservar Ahora</a>
             </div>
         <?php endif; ?>
     </div>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-</body>
+</div>
 
-</html>
+<?php require_once __DIR__ . '/templates/footer.php'; ?>

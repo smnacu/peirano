@@ -1,66 +1,70 @@
 <?php
-// index.php
-require_once 'auth.php';
+require_once __DIR__ . '/includes/config.php';
+require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . '/includes/functions.php';
 
 if (isset($_SESSION['user_id'])) {
-    header("Location: dashboard.php");
-    exit();
+    redirect('dashboard.php');
 }
 
 $error = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $cuit = $_POST['cuit'];
-    $password = $_POST['password'];
 
-    if (login($cuit, $password)) {
-        header("Location: dashboard.php");
-        exit();
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'])) {
+        $error = "Error de seguridad (CSRF). Por favor recargue la página.";
     } else {
-        $error = 'CUIT o contraseña incorrectos.';
+        $cuit = $_POST['cuit'];
+        $password = $_POST['password'];
+
+        $result = loginUser($cuit, $password);
+
+        if ($result['success']) {
+            redirect('dashboard.php');
+        } else {
+            $error = $result['message'];
+        }
     }
 }
+
+$pageTitle = 'Login - Peirano Logística';
+require_once __DIR__ . '/templates/header.php';
 ?>
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - Peirano Logística</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        body { background-color: #f0f2f5; display: flex; align-items: center; justify-content: center; height: 100vh; }
-        .login-card { width: 100%; max-width: 400px; border: none; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        .login-header { background-color: #0d6efd; color: white; border-radius: 10px 10px 0 0; padding: 30px 20px; text-align: center; }
-    </style>
-</head>
-<body>
-    <div class="card login-card shadow-lg">
-        <div class="login-header">
-            <h3 class="mb-1">Peirano Logística</h3>
-            <p class="mb-0 opacity-75">Portal de Proveedores</p>
+
+<div class="container d-flex align-items-center justify-content-center min-vh-100">
+    <div class="card shadow-lg p-4" style="max-width: 400px; width: 100%;">
+        <div class="text-center mb-4">
+            <i class="bi bi-box-seam-fill text-primary display-1"></i>
+            <h3 class="fw-bold mt-3">Peirano Logística</h3>
+            <p class="text-muted">Gestión de Turnos</p>
         </div>
-        <div class="card-body p-4">
-            <?php if ($error): ?>
-                <div class="alert alert-danger"><?php echo $error; ?></div>
-            <?php endif; ?>
-            <form method="POST">
-                <div class="mb-3">
-                    <label for="cuit" class="form-label fw-bold">CUIT</label>
-                    <input type="text" class="form-control form-control-lg" id="cuit" name="cuit" required placeholder="Sin guiones">
-                </div>
-                <div class="mb-4">
-                    <label for="password" class="form-label fw-bold">Contraseña</label>
-                    <input type="password" class="form-control form-control-lg" id="password" name="password" required>
-                </div>
-                <div class="d-grid gap-2">
-                    <button type="submit" class="btn btn-primary btn-lg fw-bold">INGRESAR</button>
-                </div>
-            </form>
-            <div class="text-center mt-4">
-                <a href="register.php" class="text-decoration-none">¿No tienes cuenta? Regístrate</a>
+
+        <?php if ($error): ?>
+            <div class="alert alert-danger d-flex align-items-center" role="alert">
+                <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                <div><?php echo $error; ?></div>
             </div>
+        <?php endif; ?>
+
+        <form method="POST">
+            <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
+            <div class="mb-3">
+                <label for="cuit" class="form-label">CUIT</label>
+                <input type="text" class="form-control bg-dark text-light border-secondary" id="cuit" name="cuit"
+                    required autofocus>
+            </div>
+            <div class="mb-4">
+                <label for="password" class="form-label">Contraseña</label>
+                <input type="password" class="form-control bg-dark text-light border-secondary" id="password"
+                    name="password" required>
+            </div>
+            <button type="submit" class="btn btn-primary w-100 py-2 fw-bold">Ingresar</button>
+        </form>
+
+        <div class="text-center mt-4">
+            <a href="register.php" class="text-decoration-none text-muted small hover-text-light">¿No tenés cuenta?
+                Registrate acá</a>
         </div>
     </div>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>
+</div>
+
+<?php require_once __DIR__ . '/templates/footer.php'; ?>

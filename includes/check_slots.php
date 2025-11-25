@@ -1,8 +1,8 @@
 <?php
 // check_slots.php
-require_once 'auth.php';
+require_once __DIR__ . '/auth.php';
 checkSession();
-require_once 'graph_sync.php';
+require_once __DIR__ . '/graph_sync.php';
 
 header('Content-Type: application/json');
 
@@ -33,7 +33,10 @@ if ($userDuration < 15) {
 
 // Si no, verificamos disponibilidad normal por sucursal
 $outlook = new OutlookSync();
-$slots = $outlook->getDailyAvailability($date, $branchId);
-
-echo json_encode($slots);
+try {
+    $slots = $outlook->getDailyAvailability($date, $branchId);
+    echo json_encode($slots);
+} catch (PDOException $e) {
+    echo json_encode(['error' => 'Error de base de datos: ' . $e->getMessage()]);
+}
 ?>
