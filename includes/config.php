@@ -20,8 +20,8 @@ define('BASE_URL', $baseUrl);
 // Database Credentials
 define('DB_HOST', 'localhost');
 define('DB_NAME', 'peirano_wms');
-define('DB_USER', 'root');
-define('DB_PASS', '');
+define('DB_USER', 'c2031975_peirano');
+define('DB_PASS', 'zoqhvewcbg5Khxi');
 
 // Microsoft Graph API Credentials
 define('TENANT_ID', 'common');
